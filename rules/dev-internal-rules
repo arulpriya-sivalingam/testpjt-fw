@@ -2,4 +2,4 @@ alert http any any -> any any (msg:"Test HTTP Rule"; content:"GET"; http_method;
 alert tls any any -> any 443 (msg:"TLS Test Rule"; ja3_hash; sid:100002; rev:1;)
 alert icmp any any -> any any (msg:"ICMP Test"; sid:100003; rev:1;)
 alert udp any any -> any 53 (msg:"DNS Query Detected"; sid:100004; rev:1;)
-pass tls any any -> any 443 (msg:"TLS Test Rule"; ja3_hash; sid:100002; rev:1;)
+pass tls any any -> any 443 (msg:"TLS Test Rule"; ja3_hash; sid:100002; rev:2;)
