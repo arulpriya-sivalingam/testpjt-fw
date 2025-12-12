@@ -1,0 +1,82 @@
+name: Suricata Syntax Check (PR Only)
+
+on:
+  pull_request:
+    paths:
+      - "rules/**"                             # 🔹 Runs only when rules change
+
+jobs:
+  suricata-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1) Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2) Install Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 3) Install suricata-check
+      - name: Install suricata-check
+        run: |
+          pip install suricata-check
+
+      # 4) Run syntax validation
+      - name: Run Suricata syntax check
+        id: lint
+        continue-on-error: true    # Let workflow continue so we can post PR comment
+        run: |
+          mkdir -p reports
+          set +e
+          suricata-check rules/**/*.rules | tee reports/suricata_raw.log
+          EXIT_CODE=$?
+          set -e
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          {
+            echo "### Suricata Syntax Validation Report"
+            echo
+            echo '```'
+            cat reports/suricata_raw.log
+            echo '```'
+          } > reports/suricata_report.md
+
+      # 5) Comment on PR with the result
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          EXIT_CODE: ${{ steps.lint.outputs.exit_code }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require("fs");
+            const report = fs.readFileSync("reports/suricata_report.md", "utf8");
+            const ok = process.env.EXIT_CODE === "0";
+
+            const body = `
+${ok ? "✅ **Suricata syntax: HEALTHY**" : "❌ **Suricata syntax: FAILED**"}
+
+<details>
+<summary>Click to view report</summary>
+
+${report}
+
+</details>
+`;
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+      # 6) Fail the job if syntax check failed
+      - name: Fail if syntax invalid
+        if: steps.lint.outputs.exit_code != '0'
+        run: exit 1
