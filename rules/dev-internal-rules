@@ -1,2 +1,2 @@
-pass tcp any any -> any 443 (sid:9999 rev:1;)
+pass tcp any any -> any 443 (rev:1;)
 
