@@ -5,6 +5,10 @@ on:
     paths:
       - "rules/**"                             # 🔹 Runs only when rules change
 
+permissions:
+  contents: read
+  pull-requests: write 
+  
 jobs:
   suricata-lint:
     runs-on: ubuntu-latest
@@ -54,27 +58,30 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require("fs");
-            const report = fs.readFileSync("reports/suricata_report.md", "utf8");
-            const ok = process.env.EXIT_CODE === "0";
+            const fs = require('fs');
 
-            const body = `
-${ok ? "✅ **Suricata syntax: HEALTHY**" : "❌ **Suricata syntax: FAILED**"}
+            // Read report file created in previous step
+            const report = fs.readFileSync('reports/suricata_report.md', 'utf8');
 
-<details>
-<summary>Click to view report</summary>
+            const ok = process.env.EXIT_CODE === '0';
+            const status = ok
+              ? '**Suricata syntax: HEALTHY**'
+              : '**Suricata syntax: FAILED**';
 
-${report}
+            const body =
+              status + '\n\n' +
+              '<details>\n' +
+              '<summary>Click to view report</summary>\n\n' +
+              report + '\n\n' +
+              '</details>\n';
 
-</details>
-`;
-
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
               body
             });
+
 
       # 6) Fail the job if syntax check failed
       - name: Fail if syntax invalid
