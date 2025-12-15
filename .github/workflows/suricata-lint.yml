@@ -32,14 +32,24 @@ jobs:
       # 4) Run syntax validation
       - name: Run Suricata syntax check
         id: lint
-        continue-on-error: true    # Let workflow continue so we can post PR comment
+        continue-on-error: true
         run: |
           mkdir -p reports
+
+          # Run suricata-check in GitHub mode against the rules folder
           set +e
-          suricata-check rules/**/*.rules | tee reports/suricata_raw.log
-          EXIT_CODE=$?
+          suricata-check --github -r rules | tee reports/suricata_raw.log
+          RC=$?
           set -e
-          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          # If suricata-check printed any ::error:: lines, treat it as failure
+          if grep -q "::error::" reports/suricata_raw.log; then
+            EXIT_CODE=1
+          else
+            EXIT_CODE=$RC
+          fi
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
 
           {
             echo "### Suricata Syntax Validation Report"
@@ -48,6 +58,7 @@ jobs:
             cat reports/suricata_raw.log
             echo '```'
           } > reports/suricata_report.md
+
 
 
       # 5) Comment on PR with the result
