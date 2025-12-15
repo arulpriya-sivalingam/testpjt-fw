@@ -36,14 +36,14 @@ jobs:
         run: |
           mkdir -p reports
 
-          # Run suricata-check in GitHub mode against the rules folder
+          # Run suricata-check against the rules directory
           set +e
-          suricata-check --github -r rules | tee reports/suricata_raw.log
+          suricata-check -r rules | tee reports/suricata_raw.log
           RC=$?
           set -e
 
-          # If suricata-check printed any ::error:: lines, treat it as failure
-          if grep -q "::error::" reports/suricata_raw.log; then
+          # If any (ERROR) appears in the log, treat it as a failure
+          if grep -q "(ERROR)" reports/suricata_raw.log; then
             EXIT_CODE=1
           else
             EXIT_CODE=$RC
