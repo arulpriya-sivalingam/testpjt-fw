@@ -1,3 +1,17 @@
+EventBridgeInvokeLambdaPolicy:
+  Type: AWS::IAM::ManagedPolicy
+  Properties:
+    ManagedPolicyName: !Sub "${EventRuleName}-invoke-lambda"
+    PolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Action:
+            - lambda:InvokeFunction
+          Resource: !Ref LambdaArn
+    Roles:
+      - !Ref EventBridgeInvokeLambdaRole
+
 EventBridgeInvokeLambdaRole:
   Type: AWS::IAM::Role
   Properties:
@@ -8,25 +22,6 @@ EventBridgeInvokeLambdaRole:
           Principal:
             Service: events.amazonaws.com
           Action: sts:AssumeRole
-    Policies:
-      - PolicyName: InvokeLambda
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-            - Effect: Allow
-              Action:
-                - lambda:InvokeFunction
-              Resource: !Ref LambdaArn
     Tags:
       - Key: Application
         Value: DNS-VPC-Automation
-      - Key: Environment
-        Value: Production
-      - Key: Owner
-        Value: Network-Team
-      - Key: ManagedBy
-        Value: CloudFormation
-      - Key: CostCenter
-        Value: Networking
-      - Key: Compliance
-        Value: ControlTower
