@@ -25,3 +25,12 @@ EventBridgeInvokeLambdaRole:
     Tags:
       - Key: Application
         Value: DNS-VPC-Automation
+
+
+  AllowEventBridgeInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaArn
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt VPCCreateRuleToNetwork.Arn
