@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: DNS VPC association Lambda (network account) - uses EXISTING KMS key, DLQ, strict SG, least privilege IAM
+
+Parameters:
+  LambdaExecutionRoleName:
+    Type: String
+    Default: dnsvpcautomationRole
+    Description: Name of the Lambda execution IAM role to create in network account
+
+  LambdaFunctionName:
+    Type: String
+    Default: dnsvpcLambdaAssociation
+    Description: Name of the Lambda function
+
+  CrossAccountRoleName:
+    Type: String
+    Default: NetworkDnsRoleAssociation
+    Description: Role name that exists in ALL spoke accounts that Network Lambda will assume
+
+  TargetRoleArns:
+    Type: CommaDelimitedList
+    Description: List of spoke role ARNs Lambda can assume (one per spoke account)
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where Lambda runs (network account)
+
+  VpcCidrForEgress:
+    Type: String
+    Description: VPC CIDR to allow egress (ex 10.0.0.0/16). Use VPC endpoints to reach AWS APIs.
+    AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}\\/[0-9]{1,2}$"
+
+  LambdaSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnet IDs for Lambda (must belong to the same VPC as VpcId)
+
+  ExistingKmsKeyArn:
+    Type: String
+    Description: EXISTING KMS Key ARN used for Lambda env encryption + SQS DLQ encryption
+    AllowedPattern: "^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key\\/.+$"
+
+  ReservedConcurrency:
+    Type: Number
+    Default: 5
+    MinValue: 0
+    Description: Reserved concurrency for Lambda (0 means no reserved concurrency)
+
+Resources:
+  # ----------------------------
+  # DLQ (encrypted with existing KMS key)
+  # ----------------------------
+  DnsvpcDlqQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${LambdaFunctionName}-dlq"
+      KmsMasterKeyId: !Ref ExistingKmsKeyArn
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  # ----------------------------
+  # Security Group (NO ingress, egress restricted)
+  # ----------------------------
+  DnsvpcLambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Outbound-only SG for DNS VPC association Lambda
+      VpcId: !Ref VpcId
+      SecurityGroupIngress: []
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCidrForEgress
+          Description: Allow HTTPS egress only within VPC CIDR (use VPC endpoints)
+
+  # ----------------------------
+  # Managed Policy for Lambda Role (least privilege)
+  # ----------------------------
+  DnsvpcLambdaManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy for DNS VPC association Lambda (network account)
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Allow assuming ONLY the provided spoke role ARNs
+          - Sid: AssumeOnlyTargetRoles
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Ref TargetRoleArns
+
+          # Read resolver rules + tags in NETWORK account
+          - Sid: NetworkListRulesAndTags
+            Effect: Allow
+            Action:
+              - route53resolver:ListResolverRules
+              - route53resolver:ListTagsForResource
+            Resource: "*"
+
+          # Needed for VPC Lambda ENI operations
+          - Sid: LambdaVpcNetworking
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DeleteNetworkInterface
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeVpcs
+            Resource: "*"
+
+          # Send failed events to DLQ
+          - Sid: DlqSendMessage
+            Effect: Allow
+            Action:
+              - sqs:SendMessage
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+            Resource: !GetAtt DnsvpcDlqQueue.Arn
+
+          # Allow Lambda to use the KMS key (for env + DLQ encryption)
+          - Sid: AllowUseOfKmsKey
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
+              - kms:DescribeKey
+            Resource: !Ref ExistingKmsKeyArn
+
+  # ----------------------------
+  # Lambda Execution Role
+  # ----------------------------
+  DnsvpcAssociationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref LambdaExecutionRoleName
+      Description: Lambda execution role in network account
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref DnsvpcLambdaManagedPolicy
+
+  # ----------------------------
+  # Lambda Function
+  # ----------------------------
+  DnsvpcAssociationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFunctionName
+      Description: Auto associate Global resolver rules to newly created VPCs across accounts
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 90
+      MemorySize: 256
+      Role: !GetAtt DnsvpcAssociationLambdaRole.Arn
+
+      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+
+      # IMPORTANT: must be KEY ARN (not key id)
+      KmsKeyArn: !Ref ExistingKmsKeyArn
+
+      DeadLetterConfig:
+        TargetArn: !GetAtt DnsvpcDlqQueue.Arn
+
+      VpcConfig:
+        SubnetIds: !Ref LambdaSubnetIds
+        SecurityGroupIds:
+          - !Ref DnsvpcLambdaSecurityGroup
+
+      Environment:
+        Variables:
+          DNSVPC_ROLE_NAME: !Ref CrossAccountRoleName
+          RULE_SCOPE_TAG: "VPCAssociation"
+          GLOBAL_SCOPE_TAG: "Global"
+
+      Code:
+        ZipFile: |
+          import os, json
+          def lambda_handler(event, context):
+              # Replace this stub with your real logic
+              return {"ok": True, "event": event, "role": os.getenv("DNSVPC_ROLE_NAME")}
+
+Outputs:
+  LambdaRoleArn:
+    Description: ARN of the created Lambda execution role
+    Value: !GetAtt DnsvpcAssociationLambdaRole.Arn
+
+  LambdaArn:
+    Description: ARN of the deployed Lambda function
+    Value: !GetAtt DnsvpcAssociationLambda.Arn
+
+  DlqArn:
+    Description: ARN of the DLQ
+    Value: !GetAtt DnsvpcDlqQueue.Arn
+
+  SecurityGroupId:
+    Description: Security Group ID used by Lambda
+    Value: !Ref DnsvpcLambdaSecurityGroup
+
+  KmsKeyArn:
+    Description: KMS Key ARN used by this stack
+    Value: !Ref ExistingKmsKeyArn
