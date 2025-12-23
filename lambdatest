@@ -1,0 +1,11 @@
+{
+  "detail": {
+    "responseElements": {
+      "vpc": {
+        "vpcId": "vpc-xxxxxxxx"
+      }
+    }
+  },
+  "account": "SPOKE_ACCOUNT_ID",
+  "region": "eu-west-1"
+}
