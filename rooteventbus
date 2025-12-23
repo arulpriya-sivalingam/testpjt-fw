@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Root account - EventBridge rule forwards CreateVpc events to Network event bus
+Description: Root account - EventBridge rule forwards CreateVpc events to Network event bus (no inline IAM policies)
 
 Parameters:
   NetworkEventBusArn:
@@ -9,6 +9,7 @@ Parameters:
   EventRuleName:
     Type: String
     Default: forward-createvpc-to-network
+    Description: Name of the EventBridge rule
 
 Resources:
   RootToNetworkPutEventsRole:
@@ -22,15 +23,31 @@ Resources:
             Principal:
               Service: events.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: AllowPutEventsToNetworkBus
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - events:PutEvents
-                Resource: !Ref NetworkEventBusArn
+      ManagedPolicyArns:
+        - !Ref RootToNetworkPutEventsManagedPolicy
+      Tags:
+        - Key: Application
+          Value: DNS-VPC-Automation
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  RootToNetworkPutEventsManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${EventRuleName}-putevents-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PutEventsToNetworkBus
+            Effect: Allow
+            Action:
+              - events:PutEvents
+            Resource: !Ref NetworkEventBusArn
+      Tags:
+        - Key: Application
+          Value: DNS-VPC-Automation
+        - Key: ManagedBy
+          Value: CloudFormation
 
   RootVpcCreateForwardRule:
     Type: AWS::Events::Rule
@@ -56,3 +73,7 @@ Resources:
 Outputs:
   RootRuleArn:
     Value: !GetAtt RootVpcCreateForwardRule.Arn
+  RootInvokeRoleArn:
+    Value: !GetAtt RootToNetworkPutEventsRole.Arn
+  RootManagedPolicyArn:
+    Value: !Ref RootToNetworkPutEventsManagedPolicy
