@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Network account - EventBridge bus + rule to invoke Network Lambda
+
+Parameters:
+  RootAccountId:
+    Type: String
+    Description: Root/Management account ID
+
+  NetworkLambdaArn:
+    Type: String
+    Description: ARN of the Network Lambda to invoke
+
+  EventBusName:
+    Type: String
+    Default: org-vpc-events-bus
+
+Resources:
+  VpcEventsBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Ref EventBusName
+
+  AllowRootToPutEvents:
+    Type: AWS::Events::EventBusPolicy
+    Properties:
+      EventBusName: !Ref VpcEventsBus
+      StatementId: AllowRootAccountPutEvents
+      Statement:
+        Effect: Allow
+        Principal:
+          AWS: !Sub "arn:aws:iam::${RootAccountId}:root"
+        Action: "events:PutEvents"
+        Resource: !GetAtt VpcEventsBus.Arn
+
+  VpcCreateRuleOnNetworkBus:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: vpc-create-forwarded-from-root
+      Description: Trigger Network Lambda when Root reports CreateVpc
+      EventBusName: !Ref VpcEventsBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - ec2.amazonaws.com
+          eventName:
+            - CreateVpc
+      Targets:
+        - Id: NetworkLambdaTarget
+          Arn: !Ref NetworkLambdaArn
+
+  AllowEventBridgeInvokeNetworkLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref NetworkLambdaArn
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt VpcCreateRuleOnNetworkBus.Arn
+
+Outputs:
+  NetworkEventBusArn:
+    Value: !GetAtt VpcEventsBus.Arn
+  NetworkEventBusName:
+    Value: !Ref VpcEventsBus
+  NetworkRuleArn:
+    Value: !GetAtt VpcCreateRuleOnNetworkBus.Arn
