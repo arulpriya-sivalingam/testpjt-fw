@@ -1,0 +1,58 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Root account - EventBridge rule forwards CreateVpc events to Network event bus
+
+Parameters:
+  NetworkEventBusArn:
+    Type: String
+    Description: ARN of the Network account custom event bus
+
+  EventRuleName:
+    Type: String
+    Default: forward-createvpc-to-network
+
+Resources:
+  RootToNetworkPutEventsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EventRuleName}-putevents-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowPutEventsToNetworkBus
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Ref NetworkEventBusArn
+
+  RootVpcCreateForwardRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Ref EventRuleName
+      Description: Forward CreateVpc events to Network event bus
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - ec2.amazonaws.com
+          eventName:
+            - CreateVpc
+      Targets:
+        - Id: SendToNetworkBus
+          Arn: !Ref NetworkEventBusArn
+          RoleArn: !GetAtt RootToNetworkPutEventsRole.Arn
+
+Outputs:
+  RootRuleArn:
+    Value: !GetAtt RootVpcCreateForwardRule.Arn
