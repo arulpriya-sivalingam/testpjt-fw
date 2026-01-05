@@ -1,0 +1,45 @@
+- name: Run Suricata lint on extracted .rules
+  id: lint
+  shell: bash
+  continue-on-error: true
+  run: |
+    mkdir -p reports
+
+    # Collect all .rules files
+    shopt -s nullglob
+    RULE_FILES=(reports/extracted_rules/*.rules)
+
+    if [ ${#RULE_FILES[@]} -eq 0 ]; then
+      echo "No .rules files found in reports/extracted_rules"
+      echo "exit_code=1" >> "$GITHUB_OUTPUT"
+      exit 1
+    fi
+
+    set +e
+    EXIT_CODE=0
+    : > reports/suricata_raw.log
+
+    for f in "${RULE_FILES[@]}"; do
+      echo "##### Checking $f" | tee -a reports/suricata_raw.log
+      suricata-check "$f" 2>&1 | tee -a reports/suricata_raw.log
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        EXIT_CODE=1
+      fi
+    done
+    set -e
+
+    # Also treat any line with (ERROR) as failure
+    if grep -q "(ERROR)" reports/suricata_raw.log; then
+      EXIT_CODE=1
+    fi
+
+    echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+    {
+      echo "### Suricata Syntax Validation Report (Extracted from RuleGroup YAMLs)"
+      echo
+      echo '```'
+      cat reports/suricata_raw.log
+      echo '```'
+    } > reports/suricata_report.md
