@@ -1,0 +1,125 @@
+name: Network Firewall - Suricata RuleGroup Lint (PR Only)
+
+on:
+  pull_request:
+    paths:
+      - "cloudformation/production/security-Infra/network-firewall/rule-groups/**"
+      - ".github/workflows/suricata-rulegroup-lint.yml"
+      - ".github/scripts/fw-rule-extract.py"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  suricata-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install suricata-check
+        run: |
+          pip install suricata-check
+
+      - name: Extract Suricata rules from RuleGroup YAMLs
+        run: |
+          mkdir -p reports/extracted_rules
+          python .github/scripts/fw-rule-extract.py
+          echo "--- Extracted .rules files ----"
+          ls -la reports/extracted_rules
+
+      - name: Run Suricata lint on extracted .rules
+        id: lint
+        shell: bash
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+
+          # Collect all .rules files
+          FILES=$(ls reports/extracted_rules/*.rules 2>/dev/null || true)
+
+          if [ -z "$FILES" ]; then
+            echo "No .rules files found in reports/extracted_rules"
+            echo "exit_code=1" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          set +e
+          EXIT_CODE=0
+          : > reports/suricata_raw.log
+
+          for f in $FILES; do
+            echo "##### Checking $f" | tee -a reports/suricata_raw.log
+            suricata-check "$f" 2>&1 | tee -a reports/suricata_raw.log
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              EXIT_CODE=1
+            fi
+          done
+
+          set -e
+
+          # Also treat any line with (ERROR) as failure
+          if grep -q "(ERROR)" reports/suricata_raw.log; then
+            EXIT_CODE=1
+          fi
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Suricata Syntax Validation Report (Extracted from RuleGroup YAMLs)"
+            echo
+            echo '```'
+            cat reports/suricata_raw.log
+            echo '```'
+          } > reports/suricata_report.md
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: suricata-rulegroup-lint-report
+          path: reports/
+
+      - name: Comment on PR with report
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          EXIT_CODE: ${{ steps.lint.outputs.exit_code }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+
+            const report = fs.readFileSync('reports/suricata_report.md', 'utf8');
+            const ok = process.env.EXIT_CODE === '0';
+            const status = ok
+              ? '***Suricata RuleGroup lint: HEALTHY***'
+              : '***Suricata RuleGroup lint: FAILED***';
+
+            const body =
+              status + '\n\n' +
+              '<details>\n' +
+              '<summary>Click to view report</summary>\n\n' +
+              report + '\n\n' +
+              '</details>\n\n' +
+              '\n_Artifact: suricata-rulegroup-lint-report_';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+      - name: Fail if lint failed
+        if: steps.lint.outputs.exit_code != '0'
+        run: |
+          echo "Suricata RuleGroup lint failed."
+          exit 1
