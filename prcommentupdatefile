@@ -1,0 +1,43 @@
+- name: Comment on PR with report
+  if: github.event_name == 'pull_request'
+  uses: actions/github-script@v7
+  env:
+    EXIT_CODE: ${{ steps.lint.outputs.exit_code }}
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    script: |
+      const fs = require('fs');
+
+      // Read the rendered markdown report
+      let report = fs.readFileSync('reports/suricata_report.md', 'utf8');
+
+      // GitHub comment body max is 65536 characters. Keep some safety margin.
+      const MAX_BODY = 60000;
+
+      let truncatedNote = '';
+      if (report.length > MAX_BODY) {
+        report = report.slice(0, MAX_BODY) +
+          '\n\n_Report truncated due to GitHub comment size limit. ' +
+          'See the `suricata-rulegroup-lint-report` artifact for the full log._\n';
+        truncatedNote = '\n\n(Report truncated – see artifact for full details.)';
+      }
+
+      const ok = process.env.EXIT_CODE === '0';
+      const status = ok
+        ? '***Suricata RuleGroup lint: HEALTHY***'
+        : '***Suricata RuleGroup lint: FAILED***';
+
+      const body =
+        status + '\n\n' +
+        '<details>\n' +
+        '<summary>Click to view report</summary>\n\n' +
+        report + truncatedNote + '\n\n' +
+        '</details>\n\n' +
+        '\n_Artifact: suricata-rulegroup-lint-report_';
+
+      await github.rest.issues.createComment({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        issue_number: context.issue.number,
+        body
+      });
