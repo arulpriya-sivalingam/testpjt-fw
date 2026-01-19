@@ -1,0 +1,51 @@
+      - name: Step 2 - Run Suricata lint on each extracted .rules
+        id: lint
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p reports
+
+          # Collect all rules files
+          FILES=(reports/extracted_rules/*.rules)
+
+          # If none found, fail clearly
+          if [ ! -e "${FILES[0]}" ]; then
+            echo "No extracted .rules files found under reports/extracted_rules/"
+            echo "exit_code=1" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          : > reports/suricata_raw.log
+          EXIT_CODE=0
+
+          for f in "${FILES[@]}"; do
+            echo "==================================================" | tee -a reports/suricata_raw.log
+            echo "FILE: $f" | tee -a reports/suricata_raw.log
+            echo "==================================================" | tee -a reports/suricata_raw.log
+
+            # Run suricata-check on ONE file at a time
+            suricata-check "$f" 2>&1 | tee -a reports/suricata_raw.log
+            RC=${PIPESTATUS[0]}
+
+            # If any file fails, overall fails
+            if [ "$RC" -ne 0 ]; then
+              EXIT_CODE=1
+            fi
+            echo "" | tee -a reports/suricata_raw.log
+          done
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+          # Build markdown report
+          {
+            echo "### Suricata Syntax Validation Report (per extracted file)"
+            echo
+            echo "**Files validated:** ${#FILES[@]}"
+            echo
+            echo '```'
+            tail -n 2500 reports/suricata_raw.log
+            echo '```'
+            echo
+            echo "_Note: Output truncated in PR comment. Download artifact for full log._"
+          } > reports/suricata_report.md
