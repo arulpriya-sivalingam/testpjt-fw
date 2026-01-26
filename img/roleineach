@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: IAM role to allow central automation to accept AWS License Manager grants
+
+Parameters:
+  ManagementAccountId:
+    Type: String
+    Description: AWS Account ID of the management/source account
+
+Resources:
+  LicenseManagerGrantAcceptRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LicenseManagerGrantAcceptRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${ManagementAccountId}:root
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LicenseManagerGrantAcceptPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - license-manager:ListReceivedGrants
+                  - license-manager:AcceptGrant
+                Resource: "*"
