@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lambda to auto-accept AWS License Manager grants across member accounts
+
+Parameters:
+  MemberAccounts:
+    Type: String
+    Description: Comma-separated list of member account IDs
+    Example: "111111111111,222222222222"
+
+  Regions:
+    Type: String
+    Description: Comma-separated list of regions to check
+    Default: "us-east-1"
+
+  MemberRoleName:
+    Type: String
+    Default: LicenseManagerGrantAcceptRole
+    Description: Role name deployed in member accounts
+
+Resources:
+
+  GrantAcceptLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LicenseManagerGrantAcceptLambdaRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AssumeMemberAccountRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub "arn:aws:iam::*:role/${MemberRoleName}"
+
+  GrantAcceptLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: AcceptLicenseManagerGrants
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt GrantAcceptLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 256
+      Environment:
+        Variables:
+          MEMBER_ACCOUNTS: !Ref MemberAccounts
+          REGIONS: !Ref Regions
+          MEMBER_ROLE_NAME: !Ref MemberRoleName
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import time
+
+          MEMBER_ACCOUNTS = os.environ["MEMBER_ACCOUNTS"].split(",")
+          REGIONS = os.environ["REGIONS"].split(",")
+          ROLE_NAME = os.environ["MEMBER_ROLE_NAME"]
+
+          sts = boto3.client("sts")
+
+          def accept_grants(account_id, region):
+              creds = sts.assume_role(
+                  RoleArn=f"arn:aws:iam::{account_id}:role/{ROLE_NAME}",
+                  RoleSessionName="AcceptLicenseGrants"
+              )["Credentials"]
+
+              lm = boto3.client(
+                  "license-manager",
+                  region_name=region,
+                  aws_access_key_id=creds["AccessKeyId"],
+                  aws_secret_access_key=creds["SecretAccessKey"],
+                  aws_session_token=creds["SessionToken"]
+              )
+
+              grants = lm.list_received_grants().get("Grants", [])
+              for g in grants:
+                  if g["GrantStatus"] == "PENDING_ACCEPT":
+                      lm.accept_grant(GrantArn=g["GrantArn"])
+                      print(f"Accepted grant {g['GrantArn']} in {account_id} ({region})")
+
+          def lambda_handler(event, context):
+              for region in REGIONS:
+                  for account in MEMBER_ACCOUNTS:
+                      account = account.strip()
+                      for _ in range(3):  # retry for eventual consistency
+                          try:
+                              accept_grants(account, region)
+                              break
+                          except Exception as e:
+                              print(f"Retrying {account} {region}: {e}")
+                              time.sleep(10)
+              return {"status": "completed"}
+
+Outputs:
+  LambdaName:
+    Description: Lambda function that accepts License Manager grants
+    Value: !Ref GrantAcceptLambda
