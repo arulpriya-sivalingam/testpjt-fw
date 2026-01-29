@@ -1,0 +1,9 @@
+aws ram create-resource-share \
+  --name phz-share-all-4 \
+  --allow-external-principals false \
+  --principals arn:aws:organizations::111111111111:organization/o-abc123xyz \
+  --resource-arns \
+    arn:aws:route53:::hostedzone/Z010AAA111111111 \
+    arn:aws:route53:::hostedzone/Z020BBB222222222 \
+    arn:aws:route53:::hostedzone/Z030CCC333333333 \
+    arn:aws:route53:::hostedzone/Z040DDD444444444
