@@ -1,0 +1,196 @@
+import logging
+import os
+import boto3
+from botocore.exceptions import ClientError
+
+########################################################
+# Env vars
+########################################################
+DNSVPC_ROLE_NAME = os.getenv("DNSVPC_ROLE_NAME", "DnsvpcLambdaRole")
+RULE_SCOPE_TAG = os.getenv("RULE_SCOPE_TAG", "VPCAssociation")
+GLOBAL_SCOPE_TAG = os.getenv("GLOBAL_SCOPE_TAG", "Global")
+
+# NEW: comma-separated hosted zone IDs (4 PHZ IDs)
+PHZ_IDS = [x.strip() for x in os.getenv("PHZ_IDS", "").split(",") if x.strip()]
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+sts = boto3.client("sts")
+
+# Route53 is global service; no region needed for the client.
+route53 = boto3.client("route53")
+
+########################################################
+# Existing helper(s)
+########################################################
+def get_network_resolver_client(region):
+    return boto3.client("route53resolver", region_name=region)
+
+def assume_role(account_id, role_name, region):
+    """
+    NOTE: Keep your existing assume-role behavior.
+    If your current code works, do not change the RoleArn format.
+    (If you want, I can harden this once you paste exact text instead of photos.)
+    """
+    # This line in your photo is a bit blurry; adjust ONLY if needed.
+    # Most common correct format:
+    role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
+
+    logger.info(f"Assuming role({role_arn})")
+    response = sts.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName="dnsvpc-auto-associate",
+    )
+    creds = response["Credentials"]
+    return boto3.Session(
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+        region_name=region,
+    )
+
+########################################################
+# Existing: get global resolver rules
+########################################################
+def get_global_resolver_rules(region):
+    r53r = get_network_resolver_client(region)
+    global_ids = []
+    paginator = r53r.get_paginator("list_resolver_rules")
+
+    for page in paginator.paginate():
+        for rule in page.get("ResolverRules", []):
+            rule_id = rule["Id"]
+            rule_arn = rule["Arn"]
+
+            try:
+                tags = r53r.list_tags_for_resource(ResourceArn=rule_arn).get("Tags", [])
+            except ClientError as e:
+                logger.error(f"Error listing tags for rule({rule_id}): {e}")
+                continue
+
+            tag_map = {t["Key"]: t["Value"] for t in tags}
+            if tag_map.get(RULE_SCOPE_TAG) == GLOBAL_SCOPE_TAG:
+                global_ids.append(rule_id)
+
+    logger.info(f"Global resolver rules discovered: {global_ids}")
+    return global_ids
+
+########################################################
+# Existing: get existing rule associations
+########################################################
+def get_existing_rule_associations(session, region, vpc_id):
+    client = session.client("route53resolver", region_name=region)
+    existing = set()
+    paginator = client.get_paginator("list_resolver_rule_associations")
+    filters = [{"Name": "VPCId", "Values": [vpc_id]}]
+
+    for page in paginator.paginate(Filters=filters):
+        for assoc in page.get("ResolverRuleAssociations", []):
+            existing.add(assoc["ResolverRuleId"])
+
+    return existing
+
+########################################################
+# Existing: associate missing rules
+########################################################
+def associate_missing_rules(session, region, account_id, vpc_id, global_rules):
+    client = session.client("route53resolver", region_name=region)
+
+    existing = get_existing_rule_associations(session, region, vpc_id)
+    missing = [r for r in global_rules if r not in existing]
+
+    if not missing:
+        logger.info(f"No missing resolver rules for the VPC {vpc_id}")
+        return
+
+    for rule in missing:
+        try:
+            logger.info(f"Associating resolver rule({rule}) with VPC({vpc_id}) in account({account_id})")
+            client.associate_resolver_rule(
+                ResolverRuleId=rule,
+                VPCId=vpc_id,
+                Name=f"auto-{rule}-{vpc_id}",
+            )
+        except ClientError as e:
+            logger.error(f"Failed to associate resolver rule({rule}) with VPC({vpc_id}) in account({account_id}): {e}")
+
+########################################################
+# NEW: Associate VPC to Private Hosted Zones (PHZ)
+########################################################
+def associate_vpc_to_phzs(vpc_id: str, region: str, account_id: str):
+    """
+    Called from Network account (PHZ owner).
+    Associates the member VPC to all PHZs in PHZ_IDS.
+    """
+    if not PHZ_IDS:
+        logger.warning("PHZ_IDS env var is empty - skipping PHZ association")
+        return []
+
+    results = []
+    for hz_id in PHZ_IDS:
+        try:
+            logger.info(f"Associating VPC({vpc_id}) in {region} to PHZ({hz_id}) for account({account_id})")
+            resp = route53.associate_vpc_with_hosted_zone(
+                HostedZoneId=hz_id,
+                VPC={"VPCRegion": region, "VPCId": vpc_id},
+                Comment=f"Auto PHZ association for account {account_id}",
+            )
+            results.append({"hostedZoneId": hz_id, "status": "OK", "changeId": resp.get("ChangeInfo", {}).get("Id")})
+        except route53.exceptions.ConflictingDomainExists as e:
+            # Happens if overlapping PHZ domains or conflicting association exists
+            logger.error(f"ConflictingDomainExists for PHZ({hz_id}) VPC({vpc_id}): {e}")
+            results.append({"hostedZoneId": hz_id, "status": "ERROR", "error": "ConflictingDomainExists"})
+        except route53.exceptions.InvalidVPCId as e:
+            logger.error(f"InvalidVPCId for PHZ({hz_id}) VPC({vpc_id}): {e}")
+            results.append({"hostedZoneId": hz_id, "status": "ERROR", "error": "InvalidVPCId"})
+        except ClientError as e:
+            logger.error(f"ClientError associating PHZ({hz_id}) VPC({vpc_id}): {e}")
+            results.append({"hostedZoneId": hz_id, "status": "ERROR", "error": "ClientError"})
+        except Exception as e:
+            logger.error(f"Unexpected error associating PHZ({hz_id}) VPC({vpc_id}): {e}")
+            results.append({"hostedZoneId": hz_id, "status": "ERROR", "error": type(e).__name__})
+
+    return results
+
+########################################################
+# Handler
+########################################################
+def lambda_handler(event, context):
+    logger.info(f"Received event from eventbridge: {event}")
+
+    account_id = event.get("account")
+    region = event.get("region")
+
+    if not account_id or not region:
+        logger.error("Missing account or region in event")
+        return
+
+    detail = event.get("detail", {})
+    vpc_info = (detail.get("responseElements", {}) or {}).get("vpc", {}) or {}
+    vpc_id = vpc_info.get("vpcId")
+
+    if not vpc_id:
+        logger.error("No VPC found in the event")
+        return
+
+    logger.info(f"New VPC created: {vpc_id} in account({account_id}) region({region})")
+
+    # NEW: PHZ association first (does NOT require assume-role)
+    phz_results = associate_vpc_to_phzs(vpc_id, region, account_id)
+    logger.info(f"PHZ association results: {phz_results}")
+
+    # Existing resolver rule logic (unchanged)
+    global_rules = get_global_resolver_rules(region)
+    if not global_rules:
+        logger.warning("No global resolver rules found")
+        return
+
+    try:
+        session = assume_role(account_id, DNSVPC_ROLE_NAME, region)
+    except ClientError as e:
+        logger.error(f"Assume role failed for account({account_id}): {e}")
+        return
+
+    associate_missing_rules(session, region, account_id, vpc_id, global_rules)
+    logger.info("Done processing createVpc event")
