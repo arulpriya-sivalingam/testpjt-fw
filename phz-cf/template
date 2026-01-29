@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Share 4 Route 53 Private Hosted Zones (PHZ) via AWS RAM to AWS Organization
+
+Parameters:
+  OrganizationId:
+    Type: String
+    Description: AWS Organization ID (example: o-abc123xyz)
+
+  HostedZoneId1:
+    Type: String
+    Description: PHZ Hosted Zone ID (example: Z0123456789ABCDEFG)
+  HostedZoneId2:
+    Type: String
+    Description: PHZ Hosted Zone ID
+  HostedZoneId3:
+    Type: String
+    Description: PHZ Hosted Zone ID
+  HostedZoneId4:
+    Type: String
+    Description: PHZ Hosted Zone ID
+
+Resources:
+  PHZShareAll:
+    Type: AWS::RAM::ResourceShare
+    Properties:
+      Name: phz-share-all-4
+      AllowExternalPrincipals: false
+
+      # Share to the entire AWS Organization
+      Principals:
+        - !Sub arn:${AWS::Partition}:organizations::${AWS::AccountId}:organization/${OrganizationId}
+
+      # Share all 4 PHZs
+      ResourceArns:
+        - !Sub arn:${AWS::Partition}:route53:::hostedzone/${HostedZoneId1}
+        - !Sub arn:${AWS::Partition}:route53:::hostedzone/${HostedZoneId2}
+        - !Sub arn:${AWS::Partition}:route53:::hostedzone/${HostedZoneId3}
+        - !Sub arn:${AWS::Partition}:route53:::hostedzone/${HostedZoneId4}
+
+Outputs:
+  ResourceShareArn:
+    Description: RAM Resource Share ARN
+    Value: !GetAtt PHZShareAll.Arn
